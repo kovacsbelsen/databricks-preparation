@@ -66,7 +66,7 @@ D) At Least One Succeeded
 The 'At Least One Succeeded' condition ensures that Task D will execute as long as any one (or more) of the upstream tasks completes successfully, regardless of the failure status of other tasks. This perfectly matches the requirement.
 
 
-10
+10.
 A Lakeflow Job has a strict SLA of 2 hours. It contains a machine learning task that sometimes hangs indefinitely. The engineer wants this specific task to fail if it takes longer than 45 minutes so a downstream alert task can trigger, but the overall job must not exceed the 2-hour SLA. How should the timeouts be configured?
 
 C) Set the Task timeout to 45 minutes and the Job timeout to 120 minutes.
@@ -74,14 +74,14 @@ C) Set the Task timeout to 45 minutes and the Job timeout to 120 minutes.
 Correct. Setting the Task timeout to 45 minutes ensures that the specific machine learning task is killed and marked as failed if it hangs, which allows downstream tasks (like alerts) to trigger. The Job timeout of 120 minutes (2 hours) enforces the overall SLA for the entire workflow execution.
 
 
-11
+11.
 A Lakeflow Job is configured with a Scheduled trigger to run every night at midnight. At 3:00 PM, a data engineer manually clicks the "Run now" button in the Jobs UI to test a recent code change. How does this manual execution affect the job's schedule?
 
 B) The manual run executes independently and does not affect or alter the midnight scheduled run.
 
 Correct. Manual runs (ad hoc executions) are completely independent of the job's configured schedule. Triggering a manual run does not change, delay, or cancel the next scheduled midnight run.
 
-12
+12.
 A data engineering team needs to process data for five different geographic regions. The list of regions is generated dynamically by an upstream task and passed as a JSON array. The team wants to run the same processing notebook concurrently for each region in the array to minimize overall job duration. Which Lakeflow Job feature should they use?
 
  For Each task configured to iterate over the JSON array.
@@ -89,3 +89,23 @@ A data engineering team needs to process data for five different geographic regi
 A For each task in Lakeflow Jobs is designed specifically to iterate over a collection (like a JSON array) and run a specified task for each item. This feature supports concurrent execution, allowing multiple instances of the processing notebook to run in parallel, which directly addresses the requirement to minimize overall job duration.
 
  
+13.
+An enterprise uses an external orchestration tool (Apache Airflow) to manage complex on-premises data pipelines. Once Airflow finishes uploading a massive dataset to cloud storage, it needs to immediately start a Databricks job to process the data. How should the Databricks job be triggered to ensure it runs exactly when Airflow finishes its tasks?
+
+A) Have Airflow use the Databricks REST API (e.g., /api/2.1/jobs/run-now) to trigger the job.
+
+Correct. Using the Databricks Jobs REST API (specifically the /api/2.1/jobs/run-now endpoint) allows Airflow to programmatically and immediately initiate a Databricks job. This creates a direct, event-driven dependency between the completion of the Airflow task and the start of the Databricks job.
+
+14.
+A Lakeflow Job uses an If/else task to route execution. If the condition is true, Task B runs; if false, Task C runs. Task D is configured downstream with dependencies on both Task B and Task C. The engineer wants Task D to execute as long as the chosen branch (B or C) completes successfully, but Task D is currently being skipped during every run. What is the most likely reason Task D is being skipped?
+
+B) Task D's Run If  condition is set to All Succeeded , which requires both Task B and Task C to succeed, but one is always skipped by the branch.
+
+Correct. In Databricks Workflows (Lakeflow Jobs), the default 'Run if' condition for a task is 'All Succeeded'. When an If/else branch is used, only one of the upstream tasks (Task B or Task C) will run, and the other will be marked as 'Skipped'. Because Task D's default condition requires 'All Succeeded', the presence of a 'Skipped' task causes the dependency criteria to fail, resulting in Task D being skipped.
+
+
+15.
+When configuring a File arrival trigger for a Databricks Job, which of the following storage locations is natively supported for monitoring new files?
+
+
+
