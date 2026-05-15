@@ -107,5 +107,43 @@ Correct. In Databricks Workflows (Lakeflow Jobs), the default 'Run if' condition
 15.
 When configuring a File arrival trigger for a Databricks Job, which of the following storage locations is natively supported for monitoring new files?
 
+D) External cloud object storage (e.g., Amazon S3, ADLS Gen2) or Unity Catalog external locations.
+
+Correct. File arrival triggers natively support cloud object storage locations such as Amazon S3, ADLS Gen2, and GCS, as well as Unity Catalog external locations. These storage solutions allow Databricks to detect newly arrived files to initiate job execution.
 
 
+16.
+A financial institution has a strict Service Level Agreement (SLA) requiring that a daily summary report be generated and emailed to executives exactly at 6:00 AM every morning. The upstream data required for this report is guaranteed to be fully processed and available in a Delta table by 5:00 AM. Which trigger type should be used for the report generation job?
+
+D) A Scheduled (cron) trigger set for 6:00 AM.
+
+A scheduled (cron) trigger is a time-based trigger that ensures a job runs exactly at the specified time. Since the upstream data is guaranteed to be ready by 5:00 AM, scheduling the report job for 6:00 AM satisfies the SLA requirement perfectly.
+
+
+17.
+A data engineer wants to execute the following multi-line SQL statement as a task in a Databricks Job: MERGE INTO target_table t USING source_table s ON t.id = s.id WHEN MATCHED THEN UPDATE SET *; The SQL statement is saved in a file named update_logic.sql in the Databricks Workspace. How can the engineer configure a task to run this specific file?
+
+C) Add a 'SQL' task, select the 'File' option, choose the update_logic.sql file from the workspace, and assign a SQL warehouse.
+
+Correct. Databricks Jobs include a 'SQL' task type specifically for running SQL queries. This task type allows you to select 'File' as the source, browse for a .sql file within the Workspace (or a remote Git provider), and execute it using a SQL Warehouse.
+
+18.
+A File Arrival trigger is configured to start a Databricks job when new files land in a Unity Catalog volume. The job is currently not running. If 10 new files arrive in the volume within a few seconds of each other, how will the File Arrival trigger behave?
+
+A) It will fire a single run of the job to process the new state of the directory.
+
+Correct. A File Arrival trigger is designed to fire a single run of the job when it detects new files in the volume. This behavior processes the new state of the directory (coalescing multiple files that arrive within a short time window) rather than issuing one run per file, ensuring efficient resource usage.
+
+19.
+A Databricks Job contains three tasks: Extract, Transform, and Send_Alert. The Send_Alert task is a notebook that sends an email to the on-call engineer if either the Extract or Transform task fails. How should the Send_Alert task be configured to achieve this?
+
+E) Set Depends on Extract and Transform. Set the Run If condition to AT_LEAST_ONE_FAILED
+
+Correct. AT_LEAST_ONE_FAILED is the appropriate Run If condition for this scenario. By setting Depends on to both tasks and choosing this condition, Databricks ensures that the Send_Alert task executes if one or more of its upstream dependencies fail.
+
+20.
+A Lakeflow Job is configured with a Table Update trigger monitoring the bronze_sensors Delta table. When the job is triggered, it runs a notebook that processes data and writes to a silver_sensors table. How does the notebook know which specific new rows triggered the run?
+
+A) The trigger only starts the job; the notebook must use Structured Streaming or Delta Change Data Feed (CDF) to identify and read the new rows.
+
+The Table Update trigger's role is strictly to signal that the source table has changed and start the job. To identify and process only the specific new or changed rows, the notebook logic must utilize tools like Structured Streaming (which uses checkpoints to track progress) or Delta Change Data Feed (CDF) to query specific versions or change types.
