@@ -1,4 +1,4 @@
-# Databricks Certified Data Engineer Associate — Complete Study Guide (v2, May 2026 exam)
+# Databricks Certified Data Engineer Associate — Expanded Complete Study Guide (v3, May 2026 exam)
 
 > **Read this first.** This is built against the **current 7-domain exam guide** (Databricks Intelligence Platform / Ingestion / Transformation / Lakeflow Jobs / CI/CD / Troubleshooting / Governance). The product family is now called **Lakeflow** — what used to be Workflows/Jobs is **Lakeflow Jobs**, what used to be Delta Live Tables (DLT) is **Lakeflow Spark Declarative Pipelines**, and **Lakeflow Connect** is a new ingestion product. Most underlying mechanics (Delta, Spark, Auto Loader, UC) are unchanged — but the names, the CI/CD domain, and the troubleshooting domain are new and you must learn them.
 >
@@ -19,6 +19,7 @@
 9. [Syntax Cheat Sheet](#9-syntax-cheat-sheet)
 10. [Most-Tested Gotchas](#10-most-tested-gotchas)
 11. [Final-Week Checklist](#11-final-week-checklist)
+12. [Expansion Pack — Missing Topics, Deeper Syntax, and Exam-Style Decision Rules](#12-expansion-pack--missing-topics-deeper-syntax-and-exam-style-decision-rules)
 
 ---
 
@@ -1434,3 +1435,1673 @@ You should be able to do all of these from memory by exam day:
 If any item above is shaky, re-read the relevant section.
 
 **Good luck — go pass it.**
+
+---
+
+# 12. Expansion Pack — Missing Topics, Deeper Syntax, and Exam-Style Decision Rules
+
+This section extends the original guide with the topics that are easy to miss in the May 2026 exam outline: Databricks Connect, Lakeflow Spark Declarative Pipelines, Lakeflow Jobs control flow, resource ownership, progress tracking, storage objects, Unity Catalog sharing/federation, and more complete SQL/PySpark syntax.
+
+## 12.1 Official coverage matrix — what every exam bullet maps to
+
+| Exam area | You must recognize | You must be able to choose / write |
+|---|---|---|
+| Platform architecture | Control plane, data plane, workspace, metastore, catalog, schema, table, volume | Which component owns metadata, compute, data files, governance, lineage, jobs |
+| Compute | All-purpose, job cluster, SQL warehouse, serverless, Photon, cluster policies, pools | Correct compute for dev, scheduled ETL, BI, dashboarding, low-admin production |
+| Ingestion | COPY INTO, Auto Loader, Lakeflow Connect, JDBC/ODBC/REST, partner connectors | Syntax for COPY INTO and Auto Loader; decision between batch, streaming, incremental, managed connector |
+| Transformation | Bronze/silver/gold, joins, union/union all, cleaning, deduplication, aggregates, arrays/maps/structs | SQL and PySpark syntax for common transformations |
+| Lakeflow Spark Declarative Pipelines | Streaming tables, materialized views, expectations, pipeline DAG, CDC/SCD patterns | Python decorators and SQL syntax; when to use declarative pipeline instead of notebook job |
+| Lakeflow Jobs | Job, task, DAG, dependency, retry, repair, rerun, trigger, schedule, task values | Configure notebook/SQL/dashboard/pipeline tasks, branching, looping, file arrival/table update triggers |
+| CI/CD | Repos, branches, commits, PRs, bundles, targets, variables, CLI | Validate/deploy/run bundles; promote same code to dev/test/prod |
+| Monitoring | Run history, task graph, Spark UI, event logs, pipeline event logs, metrics | Diagnose skew, shuffle, spill, driver OOM, executor OOM, upstream blockers |
+| Governance | Unity Catalog, privileges, storage credentials, external locations, volumes, lineage, audit logs | GRANT/REVOKE/DENY, row filters, column masks, Delta Sharing, Lakehouse Federation |
+
+## 12.2 Databricks resource map — what each object is responsible for
+
+| Resource | Responsibility | Exam clue |
+|---|---|---|
+| Workspace | UI container for notebooks, jobs, repos, queries, dashboards, clusters | “Where do users develop and schedule work?” |
+| Metastore | Top-level Unity Catalog governance boundary | “Where are catalogs registered?” |
+| Catalog | Business/domain-level namespace, e.g. `main`, `prod`, `finance` | First level of `catalog.schema.table` |
+| Schema | Database-like namespace inside a catalog | Second level of `catalog.schema.table` |
+| Table | Delta-backed tabular data | Managed/external, ACID, time travel |
+| View | Stored query, no stored result | Recomputes every read |
+| Materialized view | Stored query result | Refreshes on demand/schedule/pipeline |
+| Streaming table | Incrementally maintained table | Append/streaming ingest use case |
+| Volume | Governed file storage for non-tabular files | `/Volumes/catalog/schema/volume/path` |
+| Storage credential | UC object that represents cloud IAM/managed identity | Used by external locations |
+| External location | Governed cloud path + storage credential | Grants access to external object storage path |
+| Share | Delta Sharing container | Add tables/views to share with recipients |
+| Recipient | Delta Sharing consumer identity | External sharing target |
+| Job | Orchestrated workflow definition | Contains one or more tasks |
+| Task | One unit of work inside a job | Notebook, SQL, dashboard, pipeline, dbt, Python wheel, etc. |
+| Pipeline | Declarative ETL graph | Lakeflow Spark Declarative Pipeline / DLT |
+| Cluster | Spark compute for notebooks/jobs | Driver + workers |
+| SQL warehouse | SQL compute for BI, dashboards, SQL editor | Not for PySpark notebooks |
+| Repo / Git folder | Git-backed source control in workspace | Branch, commit, push, PR |
+| Bundle | YAML package of Databricks resources | `databricks.yml`, targets, variables |
+
+## 12.3 Compute, clusters, and cost — expanded decision table
+
+### Compute decision tree
+
+1. Is the workload BI/dashboard/SQL-only? Use a **SQL warehouse**.
+2. Is the workload a scheduled production ETL job? Use a **job cluster** or **serverless jobs**.
+3. Is the workload interactive development or exploration? Use an **all-purpose cluster**.
+4. Is the workload a declarative pipeline? Use **Lakeflow Spark Declarative Pipelines** compute, often serverless where available.
+5. Is startup time more important than lowest possible unit price? Consider **serverless** or **pools**.
+6. Is governance required with multiple users? Use UC-compatible access modes, usually **shared** for multi-user SQL/Python and **single user** for one principal / ML / Scala-heavy use.
+
+### All-purpose cluster
+
+Use for:
+- Notebook exploration.
+- Debugging and developing PySpark/SQL transformations.
+- Small ad-hoc analysis.
+- Library testing.
+
+Avoid for:
+- Scheduled production jobs, because idle time and higher DBU rate make it expensive.
+- BI dashboards, because SQL warehouses are designed for SQL concurrency.
+
+### Job cluster
+
+Use for:
+- Production Lakeflow Job tasks.
+- Scheduled ETL.
+- One job run that should create compute, execute, then terminate.
+
+Benefits:
+- Lower DBU rate than all-purpose clusters.
+- No accidental idle cost after completion.
+- Isolated dependency/runtime environment per run.
+
+### Shared job cluster inside a multi-task job
+
+A job can define a `job_cluster_key` and reuse that job cluster across tasks in the same job run:
+
+```yaml
+resources:
+  jobs:
+    daily_etl:
+      name: daily_etl
+      job_clusters:
+        - job_cluster_key: etl_cluster
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: Standard_DS3_v2
+            num_workers: 2
+      tasks:
+        - task_key: bronze
+          notebook_task: { notebook_path: ../src/bronze.py }
+          job_cluster_key: etl_cluster
+        - task_key: silver
+          depends_on: [{ task_key: bronze }]
+          notebook_task: { notebook_path: ../src/silver.py }
+          job_cluster_key: etl_cluster
+```
+
+Use this when tasks are sequential and cluster startup time would dominate. Use separate job clusters when tasks need different runtimes, libraries, isolation, or scale.
+
+### SQL warehouse
+
+Use for:
+- Databricks SQL editor.
+- Dashboards.
+- Alerts.
+- BI tool connections through JDBC/ODBC.
+- SQL query tasks in jobs.
+
+Not for:
+- PySpark notebook execution.
+- Python wheel tasks.
+- General Spark jobs.
+
+### Serverless compute
+
+Serverless means Databricks manages the compute plane for that workload. It is usually best when:
+- You want hands-off compute management.
+- You need fast startup.
+- You do not want to tune clusters manually.
+- You accept potentially higher unit price for lower ops overhead and less idle time.
+
+Exam wording often says “hands-off, auto-optimized compute managed by Databricks” → choose **serverless**.
+
+### Photon
+
+Photon is Databricks’ vectorized execution engine for SQL/DataFrame workloads. It helps most with:
+- SQL scans, filters, joins, aggregations.
+- Delta table workloads.
+- BI dashboards.
+
+It helps less or not at all with:
+- Python UDF-heavy logic.
+- External non-Spark code.
+- Workloads dominated by driver-side Python.
+
+### Cluster policies
+
+Cluster policies are admin-defined guardrails for compute configuration:
+- Restrict instance types.
+- Set max workers.
+- Enforce auto-termination.
+- Require specific runtimes or access modes.
+- Control cost and governance.
+
+Exam clue: “How can an admin prevent users from creating oversized clusters?” → **cluster policy**.
+
+### Pools
+
+Pools keep warm cloud instances ready so clusters start faster. Use pools when:
+- Many job clusters start throughout the day.
+- Startup latency matters.
+- You still want job cluster lifecycle benefits.
+
+Pools do not replace clusters; clusters attach to pools.
+
+## 12.4 Databricks Connect — local development workflow
+
+Databricks Connect lets you write code locally in an IDE while executing Spark commands on a Databricks cluster/serverless compute. It is useful when:
+- You want local IDE features: debugger, linting, tests, project structure.
+- You want code in a normal Python package instead of only notebooks.
+- You still need Spark execution against Databricks data and compute.
+
+Typical development pattern:
+
+```python
+# Local Python file, executed from your IDE
+from databricks.connect import DatabricksSession
+from pyspark.sql import functions as F
+
+spark = DatabricksSession.builder.profile("dev").getOrCreate()
+
+orders = spark.table("main.bronze.orders")
+result = (orders
+          .filter(F.col("amount") > 0)
+          .groupBy("order_date")
+          .agg(F.sum("amount").alias("revenue")))
+
+result.show()
+```
+
+Key exam distinction:
+- Local Python logic runs on your machine.
+- Spark operations are executed remotely on Databricks compute.
+- It is for development; production orchestration should still use Lakeflow Jobs / bundles.
+
+## 12.5 Notebooks, widgets, and debugging
+
+### Notebook widgets
+
+Widgets parameterize notebooks, especially when the same notebook is used by multiple job tasks:
+
+```python
+dbutils.widgets.text("catalog", "dev_main")
+dbutils.widgets.dropdown("env", "dev", ["dev", "test", "prod"])
+
+catalog = dbutils.widgets.get("catalog")
+env = dbutils.widgets.get("env")
+```
+
+SQL access:
+
+```sql
+SELECT * FROM IDENTIFIER(:catalog || '.silver.orders');
+```
+
+### `dbutils.notebook.run` vs `%run`
+
+```python
+# Runs another notebook as a separate job-like execution context.
+result = dbutils.notebook.run("/Repos/me/project/child", timeout_seconds=3600,
+                              arguments={"date": "2026-05-19"})
+
+# In child notebook
+dbutils.notebook.exit("OK")
+```
+
+`%run` imports another notebook into the current notebook and shares variables:
+
+```python
+%run ./common_functions
+```
+
+Exam rule:
+- `%run` = import-like, same context.
+- `dbutils.notebook.run()` = separate context, parameterized execution, returns string.
+
+### Built-in debugging places
+
+| Problem | Where to look first |
+|---|---|
+| Notebook cell error | Cell output + stack trace |
+| Spark query slow | Spark UI SQL/DataFrame and Stages tabs |
+| Cluster fails to start | Cluster Event Log |
+| Library/version issue | Libraries tab, notebook `%pip`, cluster logs |
+| Job failed | Lakeflow Jobs run page + task output |
+| Declarative pipeline failed | Pipeline event log + failed flow details |
+| Permission denied | Unity Catalog grants, catalog/schema/table privileges |
+| File path inaccessible | External location grants, volume grants, storage credential |
+
+## 12.6 Ingestion syntax — expanded examples
+
+### COPY INTO from CSV with schema and options
+
+```sql
+CREATE TABLE IF NOT EXISTS main.bronze.orders_raw (
+  order_id STRING,
+  customer_id STRING,
+  order_ts TIMESTAMP,
+  amount DOUBLE,
+  _source_file STRING,
+  _ingested_at TIMESTAMP
+);
+
+COPY INTO main.bronze.orders_raw
+FROM (
+  SELECT
+    order_id,
+    customer_id,
+    to_timestamp(order_ts) AS order_ts,
+    cast(amount AS DOUBLE) AS amount,
+    _metadata.file_path AS _source_file,
+    current_timestamp() AS _ingested_at
+  FROM '/Volumes/main/landing/orders/'
+)
+FILEFORMAT = CSV
+FORMAT_OPTIONS (
+  'header' = 'true',
+  'inferSchema' = 'false',
+  'delimiter' = ',',
+  'mode' = 'PERMISSIVE'
+)
+COPY_OPTIONS (
+  'mergeSchema' = 'false'
+);
+```
+
+Important COPY INTO ideas:
+- It is incremental/idempotent for files already loaded into the same target table.
+- It is best when file arrival is batch-like and not huge-scale.
+- It does not require writing streaming code.
+- It can transform columns in the `FROM (SELECT ...)` part.
+
+### COPY INTO with PATTERN / FILES
+
+```sql
+COPY INTO main.bronze.events
+FROM '/Volumes/main/landing/events/'
+FILEFORMAT = JSON
+PATTERN = '.*2026-05-.*[.]json';
+```
+
+```sql
+COPY INTO main.bronze.events
+FROM '/Volumes/main/landing/events/'
+FILEFORMAT = JSON
+FILES = ('events_001.json', 'events_002.json');
+```
+
+### Auto Loader complete template
+
+```python
+from pyspark.sql import functions as F
+
+source_path = "/Volumes/main/landing/events"
+schema_path = "/Volumes/main/checkpoints/events_schema"
+checkpoint_path = "/Volumes/main/checkpoints/bronze_events"
+
+events_raw = (
+    spark.readStream
+         .format("cloudFiles")
+         .option("cloudFiles.format", "json")
+         .option("cloudFiles.schemaLocation", schema_path)
+         .option("cloudFiles.inferColumnTypes", "true")
+         .option("cloudFiles.schemaEvolutionMode", "rescue")
+         .option("cloudFiles.useNotifications", "false")
+         .load(source_path)
+         .withColumn("_source_file", F.col("_metadata.file_path"))
+         .withColumn("_ingested_at", F.current_timestamp())
+)
+
+query = (
+    events_raw.writeStream
+              .format("delta")
+              .option("checkpointLocation", checkpoint_path)
+              .outputMode("append")
+              .trigger(availableNow=True)
+              .toTable("main.bronze.events_raw")
+)
+```
+
+Use `availableNow=True` when a scheduled job should process everything new and then stop.
+Use `processingTime='5 minutes'` when the stream should keep running and process micro-batches periodically:
+
+```python
+(df.writeStream
+   .trigger(processingTime="5 minutes")
+   .option("checkpointLocation", checkpoint_path)
+   .toTable("main.bronze.events"))
+```
+
+### Auto Loader schema evolution decision table
+
+| Mode | Behavior | When to choose |
+|---|---|---|
+| `addNewColumns` | New columns are added; stream may fail once and require restart | You trust source changes and want the table schema to grow |
+| `rescue` | Unexpected columns/data go into `_rescued_data` | You do not want schema drift to break ingestion |
+| `failOnNewColumns` | Fails when new columns appear | Strict schema contracts |
+| `none` | Ignores new columns | Rare; only when new fields are not needed |
+
+### Streaming checkpoints
+
+Checkpoint stores:
+- Source progress: which files/offsets have been processed.
+- Sink commit progress.
+- State for stateful operations.
+
+Rules:
+- One streaming query = one checkpoint location.
+- Do not share checkpoint locations across streams.
+- Do not delete checkpoints unless you intentionally want to reprocess or reset state.
+- Checkpoints are not the same as Auto Loader `schemaLocation`, though both are required in common patterns.
+
+## 12.7 Lakeflow Spark Declarative Pipelines / LDP / DLT — complete exam guide
+
+Lakeflow Spark Declarative Pipelines are the Databricks declarative ETL framework formerly known as Delta Live Tables. You describe **what tables/views should exist** and their dependencies; Databricks builds and runs the DAG.
+
+Use declarative pipelines when:
+- You want managed dependency resolution between bronze/silver/gold objects.
+- You want built-in data quality expectations.
+- You want pipeline event logs and lineage.
+- You want simpler streaming table/materialized view definitions.
+- You want CDC/SCD logic using declarative APIs.
+
+Use notebook/jobs instead when:
+- You need arbitrary procedural orchestration.
+- You need custom external API calls in many steps.
+- You need logic that does not fit declarative table/view definitions.
+
+### Python pipeline syntax
+
+```python
+import dlt
+from pyspark.sql import functions as F
+
+@dlt.table(
+    name="bronze_orders",
+    comment="Raw orders ingested from landing files"
+)
+def bronze_orders():
+    return (
+        spark.readStream
+             .format("cloudFiles")
+             .option("cloudFiles.format", "json")
+             .option("cloudFiles.schemaLocation", "/Volumes/main/checkpoints/dlt/orders_schema")
+             .load("/Volumes/main/landing/orders")
+             .withColumn("_ingested_at", F.current_timestamp())
+    )
+
+@dlt.table(
+    name="silver_orders",
+    comment="Cleaned valid orders"
+)
+@dlt.expect("valid_amount", "amount >= 0")
+@dlt.expect_or_drop("order_id_present", "order_id IS NOT NULL")
+def silver_orders():
+    return (
+        dlt.read_stream("bronze_orders")
+           .withColumn("amount", F.col("amount").cast("double"))
+           .withColumn("order_date", F.to_date("order_ts"))
+           .dropDuplicates(["order_id"])
+    )
+
+@dlt.table(name="gold_daily_revenue")
+def gold_daily_revenue():
+    return (
+        dlt.read("silver_orders")
+           .groupBy("order_date")
+           .agg(F.sum("amount").alias("revenue"),
+                F.countDistinct("order_id").alias("orders"))
+    )
+```
+
+### SQL pipeline syntax
+
+```sql
+CREATE OR REFRESH STREAMING TABLE bronze_orders
+COMMENT 'Raw orders from files'
+AS SELECT
+  *,
+  current_timestamp() AS _ingested_at
+FROM STREAM read_files(
+  '/Volumes/main/landing/orders',
+  format => 'json',
+  schemaLocation => '/Volumes/main/checkpoints/ldp/orders_schema'
+);
+
+CREATE OR REFRESH STREAMING TABLE silver_orders (
+  CONSTRAINT valid_amount EXPECT (amount >= 0),
+  CONSTRAINT order_id_present EXPECT (order_id IS NOT NULL) ON VIOLATION DROP ROW
+)
+AS SELECT
+  order_id,
+  customer_id,
+  CAST(amount AS DOUBLE) AS amount,
+  TO_DATE(order_ts) AS order_date,
+  _ingested_at
+FROM STREAM(LIVE.bronze_orders);
+
+CREATE OR REFRESH MATERIALIZED VIEW gold_daily_revenue
+AS SELECT
+  order_date,
+  SUM(amount) AS revenue,
+  COUNT(DISTINCT order_id) AS orders
+FROM LIVE.silver_orders
+GROUP BY order_date;
+```
+
+### `LIVE` and `STREAM`
+
+- `LIVE.table_name` references another dataset in the same pipeline.
+- `STREAM(LIVE.table_name)` reads it as a streaming input.
+- `dlt.read("table")` reads a table in batch mode.
+- `dlt.read_stream("table")` reads a table as a stream.
+
+### Expectations
+
+| Python | SQL | Behavior |
+|---|---|---|
+| `@dlt.expect("rule", "condition")` | `EXPECT (condition)` | Records metrics, keeps invalid rows |
+| `@dlt.expect_or_drop("rule", "condition")` | `ON VIOLATION DROP ROW` | Drops invalid rows |
+| `@dlt.expect_or_fail("rule", "condition")` | `ON VIOLATION FAIL UPDATE` | Fails the update |
+
+Exam rule:
+- Need monitoring only → expect.
+- Need to keep pipeline running but remove bad rows → drop.
+- Need strict data contract → fail.
+
+### Pipeline modes
+
+| Mode | Meaning | Use case |
+|---|---|---|
+| Triggered | Runs once, processes available data, then stops | Scheduled batch/incremental processing |
+| Continuous | Keeps running and processes changes continuously | Low-latency streaming |
+| Development | Debug-friendly, less strict, may allow faster iteration | Building/testing pipeline |
+| Production | Stable operational mode | Production workloads |
+
+### Pipeline event log
+
+Use the pipeline event log to track:
+- Dataset update status.
+- Flow start/end/failure.
+- Expectation metrics.
+- Error messages.
+- Runtime and throughput.
+
+Typical troubleshooting path:
+1. Open pipeline update.
+2. Find failed dataset/flow.
+3. Inspect event log error.
+4. Check expectation failures or schema evolution issue.
+5. Fix code/config and rerun.
+
+### CDC and SCD with `APPLY CHANGES`
+
+SCD Type 1 overwrites current values:
+
+```sql
+CREATE OR REFRESH STREAMING TABLE silver_customers;
+
+APPLY CHANGES INTO LIVE.silver_customers
+FROM STREAM(LIVE.bronze_customer_changes)
+KEYS (customer_id)
+SEQUENCE BY change_ts
+COLUMNS * EXCEPT (_rescued_data)
+STORED AS SCD TYPE 1;
+```
+
+SCD Type 2 preserves history:
+
+```sql
+CREATE OR REFRESH STREAMING TABLE dim_customers;
+
+APPLY CHANGES INTO LIVE.dim_customers
+FROM STREAM(LIVE.bronze_customer_changes)
+KEYS (customer_id)
+SEQUENCE BY change_ts
+COLUMNS * EXCEPT (_rescued_data)
+STORED AS SCD TYPE 2;
+```
+
+SCD Type 1 exam clue: “keep only latest value.”
+SCD Type 2 exam clue: “preserve history / effective periods / previous values.”
+
+## 12.8 Lakeflow Jobs — full orchestration guide
+
+### Job vs task
+
+A **job** is the orchestration container. A **task** is one executable unit inside the job.
+
+A job can include:
+- Notebook task.
+- SQL query task.
+- Dashboard refresh task.
+- Pipeline task.
+- Python script task.
+- Python wheel task.
+- JAR task.
+- Spark submit task.
+- dbt task.
+- Run job task.
+- If/else task.
+- For each task.
+
+### Dependencies
+
+Task B can depend on Task A:
+
+```yaml
+tasks:
+  - task_key: ingest
+    notebook_task:
+      notebook_path: ../src/ingest.py
+
+  - task_key: transform
+    depends_on:
+      - task_key: ingest
+    notebook_task:
+      notebook_path: ../src/transform.py
+```
+
+If a dependency fails, downstream tasks are skipped unless configured to run on failure/always.
+
+### Retries
+
+Use retries for transient failures:
+- Temporary cloud storage issue.
+- API rate limit.
+- Spot/preemptible instance interruption.
+- Network blip.
+
+```yaml
+tasks:
+  - task_key: ingest_api
+    notebook_task:
+      notebook_path: ../src/ingest_api.py
+    max_retries: 3
+    min_retry_interval_millis: 300000
+    retry_on_timeout: true
+```
+
+Do not use retries to hide deterministic data quality failures; fix the data or code.
+
+### Repair run and rerun
+
+If a multi-task job fails after some tasks succeeded:
+- **Rerun failed task** / **repair run** runs only failed and downstream dependent tasks.
+- Full rerun starts the whole job again.
+
+Exam clue: “A downstream task failed after upstream tasks succeeded; avoid recomputing successful tasks” → **repair run / rerun failed task**.
+
+### Task values for passing state
+
+```python
+# producer task
+row_count = spark.table("main.bronze.orders").count()
+dbutils.jobs.taskValues.set(key="row_count", value=row_count)
+```
+
+```python
+# consumer task
+row_count = dbutils.jobs.taskValues.get(taskKey="ingest", key="row_count", default=0)
+```
+
+Use this for:
+- If/else branching.
+- Passing small metadata between tasks.
+- Recording counts or flags.
+
+Do not pass large datasets through task values. Write large data to tables/volumes.
+
+### If/else branching
+
+Use when later tasks depend on a condition:
+- Row count > 0.
+- Quality check passed.
+- Environment is prod.
+- File type equals X.
+
+Example idea:
+1. `check_new_data` task sets `has_rows=true`.
+2. If/else task checks `{{tasks.check_new_data.values.has_rows}} == true`.
+3. True branch runs transform; false branch ends or sends notification.
+
+### For each looping
+
+Use for repeated task execution over a list:
+- Process many countries.
+- Backfill many dates.
+- Ingest many tenants/customers.
+- Refresh many partitions.
+
+Do not create 100 almost-identical tasks manually if a For each task can loop over the list.
+
+### Trigger decision table
+
+| Trigger | Use when | Example |
+|---|---|---|
+| Manual | Human-controlled run | Run now for test |
+| Scheduled | Predictable cadence | Every day at 02:00 |
+| File arrival | Source files arrive unpredictably | Trigger when file lands in `/landing/orders/` |
+| Table update | Downstream job depends on upstream Delta table commits | Run silver after bronze table updates |
+| Continuous | Always-on pipeline/job | Near-real-time processing |
+
+### Monitoring job progress
+
+In Lakeflow Jobs UI, track:
+- Run status: queued, running, success, failed, canceled, skipped.
+- Task graph: which task failed and which tasks were blocked.
+- Duration by task: find bottlenecks.
+- Historical run times: compare today to baseline.
+- Retry attempts: transient vs persistent failure.
+- Cluster used: runtime, node type, autoscaling, logs.
+- Output/logs for each task.
+
+### Notifications
+
+Configure notifications for:
+- Failure.
+- Success.
+- Start.
+- Duration threshold exceeded.
+
+Use email for simple alerts, webhooks/system destinations for Slack/Teams/PagerDuty-style workflows.
+
+## 12.9 SQL and PySpark transformation syntax — expanded drill section
+
+### Basic reads/writes
+
+```python
+# Read UC table
+orders = spark.table("main.bronze.orders")
+orders = spark.read.table("main.bronze.orders")
+
+# Write managed table
+(orders.write
+       .format("delta")
+       .mode("overwrite")
+       .option("overwriteSchema", "true")
+       .saveAsTable("main.silver.orders"))
+
+# Append
+orders.write.mode("append").saveAsTable("main.silver.orders")
+```
+
+```sql
+SELECT * FROM main.bronze.orders;
+
+CREATE OR REPLACE TABLE main.silver.orders AS
+SELECT * FROM main.bronze.orders;
+
+INSERT INTO main.silver.orders
+SELECT * FROM main.bronze.new_orders;
+```
+
+### Null handling
+
+```python
+from pyspark.sql import functions as F
+
+df.fillna({"country": "unknown", "amount": 0})
+df.dropna(subset=["order_id"])
+df.withColumn("country", F.coalesce(F.col("country"), F.lit("unknown")))
+```
+
+```sql
+SELECT
+  COALESCE(country, 'unknown') AS country,
+  IFNULL(amount, 0) AS amount
+FROM orders
+WHERE order_id IS NOT NULL;
+```
+
+### Type standardization
+
+```python
+df.withColumn("amount", F.col("amount").cast("decimal(10,2)")) \
+  .withColumn("order_date", F.to_date("order_ts")) \
+  .withColumn("order_ts", F.to_timestamp("order_ts_string", "yyyy-MM-dd HH:mm:ss"))
+```
+
+```sql
+SELECT
+  CAST(amount AS DECIMAL(10,2)) AS amount,
+  TO_DATE(order_ts) AS order_date,
+  TO_TIMESTAMP(order_ts_string, 'yyyy-MM-dd HH:mm:ss') AS order_ts
+FROM orders;
+```
+
+### Filtering
+
+```python
+df.filter(F.col("amount") > 0)
+df.where("amount > 0 AND status IN ('paid', 'shipped')")
+df.filter(F.col("customer_id").isNotNull())
+```
+
+```sql
+SELECT * FROM orders
+WHERE amount > 0
+  AND status IN ('paid', 'shipped')
+  AND customer_id IS NOT NULL;
+```
+
+### Column add/drop/rename/split
+
+```python
+df.withColumn("gross_amount", F.col("amount") + F.col("tax"))
+df.withColumnRenamed("cust_id", "customer_id")
+df.drop("unused_col")
+df.withColumn("email_domain", F.split(F.col("email"), "@").getItem(1))
+```
+
+```sql
+SELECT
+  amount + tax AS gross_amount,
+  cust_id AS customer_id,
+  SPLIT(email, '@')[1] AS email_domain
+FROM orders;
+```
+
+### Joins
+
+```python
+# Inner join
+orders.join(customers, on="customer_id", how="inner")
+
+# Left join
+orders.join(customers, on="customer_id", how="left")
+
+# Multiple keys
+orders.join(rates, on=["currency", "rate_date"], how="left")
+
+# Cross join
+orders.crossJoin(calendar)
+
+# Broadcast join
+orders.join(F.broadcast(small_customers), on="customer_id", how="left")
+
+# Semi / anti joins
+orders.join(customers, on="customer_id", how="left_semi")
+orders.join(customers, on="customer_id", how="left_anti")
+```
+
+```sql
+SELECT * FROM orders INNER JOIN customers USING (customer_id);
+SELECT * FROM orders LEFT JOIN customers USING (customer_id);
+SELECT * FROM orders o JOIN rates r ON o.currency = r.currency AND o.order_date = r.rate_date;
+SELECT /*+ BROADCAST(c) */ * FROM orders o LEFT JOIN customers c ON o.customer_id = c.customer_id;
+SELECT o.* FROM orders o LEFT SEMI JOIN customers c ON o.customer_id = c.customer_id;
+SELECT o.* FROM orders o LEFT ANTI JOIN customers c ON o.customer_id = c.customer_id;
+```
+
+### Union vs union all
+
+```python
+# PySpark union keeps duplicates, like SQL UNION ALL.
+df_all = jan.unionByName(feb)
+
+# For SQL UNION behavior, add distinct.
+df_deduped = jan.unionByName(feb).distinct()
+
+# Allow missing columns by name.
+df = jan.unionByName(feb, allowMissingColumns=True)
+```
+
+```sql
+SELECT * FROM jan
+UNION ALL
+SELECT * FROM feb;
+
+SELECT * FROM jan
+UNION
+SELECT * FROM feb;
+```
+
+Exam gotcha: PySpark `union` / `unionByName` does **not** deduplicate; SQL `UNION` deduplicates, SQL `UNION ALL` does not.
+
+### Deduplication
+
+```python
+# Full row dedup
+df.distinct()
+df.dropDuplicates()
+
+# Key-based dedup
+df.dropDuplicates(["order_id"])
+```
+
+Deterministic dedup using window:
+
+```python
+from pyspark.sql.window import Window
+
+w = Window.partitionBy("order_id").orderBy(F.col("updated_at").desc())
+latest = (df.withColumn("rn", F.row_number().over(w))
+            .filter("rn = 1")
+            .drop("rn"))
+```
+
+```sql
+CREATE OR REPLACE TABLE silver.orders AS
+SELECT * EXCEPT (rn)
+FROM (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY updated_at DESC) AS rn
+  FROM bronze.orders
+)
+WHERE rn = 1;
+```
+
+### Aggregations
+
+```python
+(df.groupBy("order_date", "country")
+   .agg(F.count("*").alias("rows"),
+        F.countDistinct("order_id").alias("orders"),
+        F.approx_count_distinct("customer_id").alias("approx_customers"),
+        F.sum("amount").alias("revenue"),
+        F.mean("amount").alias("avg_amount"),
+        F.min("amount").alias("min_amount"),
+        F.max("amount").alias("max_amount")))
+```
+
+```sql
+SELECT
+  order_date,
+  country,
+  COUNT(*) AS rows,
+  COUNT(DISTINCT order_id) AS orders,
+  APPROX_COUNT_DISTINCT(customer_id) AS approx_customers,
+  SUM(amount) AS revenue,
+  AVG(amount) AS avg_amount,
+  MIN(amount) AS min_amount,
+  MAX(amount) AS max_amount
+FROM orders
+GROUP BY order_date, country;
+```
+
+### Window functions
+
+```python
+w = Window.partitionBy("customer_id").orderBy(F.col("order_ts").desc())
+
+df.select(
+    "customer_id", "order_id", "order_ts", "amount",
+    F.row_number().over(w).alias("rn"),
+    F.rank().over(w).alias("rank"),
+    F.dense_rank().over(w).alias("dense_rank"),
+    F.lag("amount").over(w).alias("previous_amount")
+)
+```
+
+```sql
+SELECT
+  customer_id,
+  order_id,
+  amount,
+  ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_ts DESC) AS rn,
+  RANK()       OVER (PARTITION BY customer_id ORDER BY amount DESC) AS rnk,
+  DENSE_RANK() OVER (PARTITION BY customer_id ORDER BY amount DESC) AS dense_rnk,
+  LAG(amount)  OVER (PARTITION BY customer_id ORDER BY order_ts) AS previous_amount
+FROM orders;
+```
+
+### MERGE patterns
+
+Simple upsert:
+
+```sql
+MERGE INTO main.silver.customers AS t
+USING main.staging.customer_updates AS s
+ON t.customer_id = s.customer_id
+WHEN MATCHED THEN UPDATE SET *
+WHEN NOT MATCHED THEN INSERT *;
+```
+
+Delete + update + insert:
+
+```sql
+MERGE INTO main.silver.customers AS t
+USING main.staging.customer_updates AS s
+ON t.customer_id = s.customer_id
+WHEN MATCHED AND s.operation = 'DELETE' THEN DELETE
+WHEN MATCHED THEN UPDATE SET
+  name = s.name,
+  email = s.email,
+  updated_at = s.updated_at
+WHEN NOT MATCHED AND s.operation != 'DELETE' THEN INSERT (
+  customer_id, name, email, updated_at
+) VALUES (
+  s.customer_id, s.name, s.email, s.updated_at
+);
+```
+
+Full synchronization pattern:
+
+```sql
+MERGE INTO target t
+USING source s
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET *
+WHEN NOT MATCHED THEN INSERT *
+WHEN NOT MATCHED BY SOURCE THEN DELETE;
+```
+
+## 12.10 Collections and complex data types
+
+Spark “collections” usually means arrays, maps, and structs. The exam may phrase this as complex data, nested data, semi-structured data, or JSON handling.
+
+### Structs
+
+```python
+df.select(F.col("customer.name"), F.col("customer.address.city"))
+df.withColumn("customer_struct", F.struct("customer_id", "customer_name"))
+```
+
+```sql
+SELECT customer.name, customer.address.city FROM events;
+SELECT named_struct('id', customer_id, 'name', customer_name) AS customer FROM customers;
+```
+
+### Arrays
+
+```python
+df.select(F.col("items")[0].alias("first_item"))
+df.select("order_id", F.explode("items").alias("item"))
+df.select("order_id", F.posexplode("items").alias("position", "item"))
+df.withColumn("item_count", F.size("items"))
+df.withColumn("has_item", F.array_contains("items", "SKU123"))
+```
+
+```sql
+SELECT items[0] AS first_item FROM orders;
+SELECT order_id, EXPLODE(items) AS item FROM orders;
+SELECT order_id, POSEXPLODE(items) AS (position, item) FROM orders;
+SELECT SIZE(items) AS item_count FROM orders;
+SELECT ARRAY_CONTAINS(items, 'SKU123') AS has_item FROM orders;
+```
+
+### Maps
+
+```python
+df.select(F.col("attributes")["color"].alias("color"))
+df.select(F.map_keys("attributes"), F.map_values("attributes"))
+```
+
+```sql
+SELECT attributes['color'] AS color FROM products;
+SELECT map_keys(attributes), map_values(attributes) FROM products;
+```
+
+### JSON parsing
+
+```python
+schema = "order_id STRING, customer STRUCT<id: STRING, name: STRING>, items ARRAY<STRUCT<sku: STRING, qty: INT>>"
+parsed = df.withColumn("json", F.from_json("raw_json", schema))
+parsed.select("json.order_id", "json.customer.name", F.explode("json.items").alias("item"))
+```
+
+```sql
+SELECT
+  parsed.order_id,
+  parsed.customer.name AS customer_name,
+  item.sku,
+  item.qty
+FROM (
+  SELECT from_json(raw_json, 'order_id STRING, customer STRUCT<id: STRING, name: STRING>, items ARRAY<STRUCT<sku: STRING, qty: INT>>') AS parsed
+  FROM raw_events
+)
+LATERAL VIEW explode(parsed.items) exploded AS item;
+```
+
+### Higher-order functions
+
+```sql
+SELECT TRANSFORM(items, x -> x.sku) AS skus FROM orders;
+SELECT FILTER(items, x -> x.qty > 1) AS multi_qty_items FROM orders;
+SELECT EXISTS(items, x -> x.sku = 'SKU123') AS contains_sku FROM orders;
+SELECT AGGREGATE(items, 0, (acc, x) -> acc + x.qty) AS total_qty FROM orders;
+```
+
+Use these when the question asks to transform/filter arrays without exploding them.
+
+## 12.11 Delta Lake, storage, and table maintenance — deeper coverage
+
+### Managed table vs external table
+
+```sql
+-- Managed table: no LOCATION clause
+CREATE TABLE main.silver.orders (
+  order_id STRING,
+  amount DOUBLE
+) USING DELTA;
+
+-- External table: LOCATION clause points to external storage
+CREATE TABLE main.silver.orders_ext (
+  order_id STRING,
+  amount DOUBLE
+) USING DELTA
+LOCATION 'abfss://container@account.dfs.core.windows.net/orders_ext/';
+```
+
+Drop behavior:
+- Managed table: Databricks manages lifecycle; dropping table deletes underlying data after retention behavior.
+- External table: dropping table removes metadata; files remain in the external location.
+
+### Delta transaction log
+
+The `_delta_log` contains commit JSON/checkpoint files. It enables:
+- ACID transactions.
+- Schema enforcement.
+- Time travel.
+- Concurrent reads/writes.
+- `DESCRIBE HISTORY`.
+
+### Table history and restore
+
+```sql
+DESCRIBE HISTORY main.silver.orders;
+
+SELECT * FROM main.silver.orders VERSION AS OF 12;
+SELECT * FROM main.silver.orders TIMESTAMP AS OF '2026-05-01T00:00:00Z';
+
+RESTORE TABLE main.silver.orders TO VERSION AS OF 12;
+```
+
+### Optimize, liquid clustering, vacuum, analyze
+
+```sql
+OPTIMIZE main.silver.orders;
+
+CREATE TABLE main.silver.events (
+  event_id STRING,
+  event_ts TIMESTAMP,
+  customer_id STRING,
+  region STRING
+) USING DELTA
+CLUSTER BY (region, event_ts);
+
+ALTER TABLE main.silver.events CLUSTER BY (customer_id);
+OPTIMIZE main.silver.events;
+
+VACUUM main.silver.orders RETAIN 168 HOURS;
+
+ANALYZE TABLE main.silver.orders COMPUTE STATISTICS;
+```
+
+Exam rules:
+- `OPTIMIZE` compacts small files.
+- Liquid clustering replaces static partition/ZORDER-style layout decisions in many modern UC Delta scenarios.
+- `VACUUM` removes old files no longer needed by the transaction log retention window.
+- `ANALYZE` collects statistics for query planning.
+- Predictive Optimization can run optimize/vacuum/analyze automatically for eligible UC managed tables.
+
+### Partitioning vs liquid clustering
+
+| Feature | Partitioning | Liquid clustering |
+|---|---|---|
+| Physical layout | Directory partitions | Clustering managed by Delta |
+| Good for | Low-cardinality columns used for pruning | High-cardinality or changing query patterns |
+| Change keys later | Requires rewrite/recreate pattern | Keys can be changed with `ALTER TABLE ... CLUSTER BY` |
+| Risk | Too many tiny partitions | Requires OPTIMIZE for existing data |
+
+Do not partition by high-cardinality columns like user_id/order_id. That causes too many small directories/files.
+
+## 12.12 Gold layer objects — exact use cases
+
+| Object | Stored? | Updated how? | Use when |
+|---|---:|---|---|
+| Table | Yes | `INSERT`, `MERGE`, `CREATE OR REPLACE`, writes | General persistent dataset |
+| View | No | Always recomputed on query | Simple abstraction, security filter, lightweight logic |
+| Materialized view | Yes | Refresh/update mechanism | Expensive aggregation queried frequently |
+| Streaming table | Yes | Incrementally from streaming source | Append/incremental stream ingestion or continuous updates |
+
+Examples:
+
+```sql
+CREATE OR REPLACE VIEW main.gold.active_customers AS
+SELECT * FROM main.silver.customers
+WHERE status = 'active';
+```
+
+```sql
+CREATE OR REPLACE MATERIALIZED VIEW main.gold.daily_revenue AS
+SELECT order_date, SUM(amount) AS revenue
+FROM main.silver.orders
+GROUP BY order_date;
+```
+
+```sql
+CREATE OR REFRESH STREAMING TABLE main.bronze.events
+AS SELECT * FROM STREAM read_files('/Volumes/main/landing/events', format => 'json');
+```
+
+```sql
+CREATE OR REPLACE TABLE main.gold.customer_revenue AS
+SELECT customer_id, SUM(amount) AS lifetime_revenue
+FROM main.silver.orders
+GROUP BY customer_id;
+```
+
+## 12.13 Data quality patterns
+
+### Programmatic checks
+
+```python
+bad_rows = df.filter("amount < 0 OR order_id IS NULL").count()
+if bad_rows > 0:
+    raise ValueError(f"Data quality failed: {bad_rows} bad rows")
+```
+
+Flexible, but you must implement logging and actions yourself.
+
+### Delta CHECK constraints
+
+```sql
+ALTER TABLE main.silver.orders
+ADD CONSTRAINT positive_amount CHECK (amount >= 0);
+```
+
+Strict: invalid writes fail.
+
+### Lakeflow expectations
+
+```python
+@dlt.expect_or_drop("valid_order", "order_id IS NOT NULL AND amount >= 0")
+def silver_orders():
+    return dlt.read_stream("bronze_orders")
+```
+
+Best when you want quality metrics integrated with the pipeline.
+
+### Quarantine pattern
+
+Good rows:
+
+```sql
+CREATE OR REPLACE TABLE main.silver.orders_clean AS
+SELECT * FROM main.bronze.orders
+WHERE order_id IS NOT NULL AND amount >= 0;
+```
+
+Bad rows:
+
+```sql
+CREATE OR REPLACE TABLE main.silver.orders_quarantine AS
+SELECT *, current_timestamp() AS quarantined_at
+FROM main.bronze.orders
+WHERE order_id IS NULL OR amount < 0;
+```
+
+Use quarantine when data should not be lost but should not enter gold reporting.
+
+## 12.14 Troubleshooting and optimization — exam diagnosis guide
+
+### Spark action vs transformation
+
+Transformations are lazy:
+- `select`, `filter`, `withColumn`, `join`, `groupBy` definition, `drop`.
+
+Actions trigger execution:
+- `count`, `collect`, `show`, `display`, `write`, `saveAsTable`, `foreach`, `take`.
+
+Exam clue: Spark UI shows a job only after an action runs.
+
+### Narrow vs wide transformations
+
+| Type | Examples | Shuffle? |
+|---|---|---|
+| Narrow | `select`, `filter`, `withColumn`, `map` | Usually no |
+| Wide | `groupBy`, `join`, `distinct`, `orderBy`, `repartition` | Yes |
+
+If a stage boundary appears, usually a shuffle happened.
+
+### Bottleneck table
+
+| Symptom | Likely issue | Fix |
+|---|---|---|
+| One or few tasks much slower than others | Data skew | Salt key, broadcast small side, filter null/mega-keys separately, AQE skew handling |
+| High shuffle read/write | Expensive wide operation | Filter/project before join, broadcast, pre-aggregate, adjust partitioning |
+| High disk spill | Partitions too large / not enough memory | Increase shuffle partitions, executor memory, reduce per-task data |
+| Driver OOM | `collect()`/large result/broadcast to driver | Avoid collect, write to table, increase driver memory if needed |
+| Executor OOM | Big partitions, skew, bad broadcast | More partitions, more memory, fix skew, disable/hint broadcast |
+| Many tiny files | Too many small writes | OPTIMIZE, auto optimize/predictive optimization, coalesce carefully before write |
+| Query reads too much data | Poor pruning/layout | Liquid clustering, partitioning when appropriate, file stats, filters |
+
+### Spark UI tabs
+
+| Tab | What it answers |
+|---|---|
+| Jobs | Which actions ran and whether they succeeded |
+| Stages | Where time was spent and shuffle boundaries |
+| Tasks | Task-level skew, spill, input size, duration |
+| SQL/DataFrame | Logical/physical plan, join strategy, scan filters |
+| Executors | Memory use, failed tasks, GC time, executor loss |
+| Storage | Cached DataFrames/tables |
+| Environment | Spark configs |
+
+### Re-measurement loop
+
+1. Baseline runtime and Spark UI metrics.
+2. Change one thing: broadcast hint, shuffle partitions, cluster size, filter early, layout.
+3. Rerun same workload.
+4. Compare runtime, shuffle bytes, spill, task skew.
+5. Keep change only if metrics improve.
+
+Exam wording “re-measure performance” → do not guess; compare before/after metrics.
+
+## 12.15 CI/CD and bundles — expanded syntax
+
+### Bundle structure
+
+```text
+project/
+  databricks.yml
+  resources/
+    jobs.yml
+    pipelines.yml
+  src/
+    bronze.py
+    silver.py
+    pipeline.py
+  tests/
+    test_transforms.py
+```
+
+### Full bundle example
+
+```yaml
+bundle:
+  name: dea_orders_project
+
+variables:
+  catalog:
+    default: dev_main
+  schema:
+    default: orders
+  warehouse_id:
+    description: SQL warehouse for query tasks
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://dev.cloud.databricks.com
+    variables:
+      catalog: dev_main
+
+  prod:
+    mode: production
+    workspace:
+      host: https://prod.cloud.databricks.com
+    variables:
+      catalog: prod_main
+      schema: orders
+
+resources:
+  jobs:
+    orders_daily:
+      name: orders_daily_${bundle.target}
+      tasks:
+        - task_key: ingest
+          notebook_task:
+            notebook_path: ./src/bronze.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+          job_cluster_key: main
+        - task_key: transform
+          depends_on:
+            - task_key: ingest
+          notebook_task:
+            notebook_path: ./src/silver.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+          job_cluster_key: main
+      job_clusters:
+        - job_cluster_key: main
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: Standard_DS3_v2
+            num_workers: 2
+```
+
+### CLI commands
+
+```bash
+databricks auth login --host https://dev.cloud.databricks.com
+
+databricks bundle validate -t dev
+databricks bundle deploy -t dev
+databricks bundle run orders_daily -t dev
+databricks bundle deploy -t prod
+databricks bundle destroy -t dev
+```
+
+Exam rules:
+- `validate` checks bundle config; it does not deploy resources.
+- `deploy` creates/updates workspace resources.
+- `run` runs a deployed job/pipeline resource.
+- `destroy` removes deployed resources for that target.
+- Targets + variables avoid copying code for dev/test/prod.
+
+### Repos workflow
+
+1. Clone repo into Databricks Git folder.
+2. Create or switch branch.
+3. Edit notebooks/source files.
+4. Commit changes.
+5. Push branch.
+6. Create PR in Git provider.
+7. Merge after review.
+8. Pull latest main branch in workspace or let CI/CD deploy bundle.
+
+## 12.16 Unity Catalog governance, roles, audit, lineage, sharing, federation
+
+### Privilege hierarchy
+
+To query a table, a principal usually needs:
+
+```sql
+GRANT USE CATALOG ON CATALOG main TO `analysts`;
+GRANT USE SCHEMA ON SCHEMA main.sales TO `analysts`;
+GRANT SELECT ON TABLE main.sales.orders TO `analysts`;
+```
+
+For all current tables in a schema:
+
+```sql
+GRANT SELECT ON ALL TABLES IN SCHEMA main.sales TO `analysts`;
+```
+
+For future tables:
+
+```sql
+GRANT SELECT ON FUTURE TABLES IN SCHEMA main.sales TO `analysts`;
+```
+
+Common privileges:
+- `USE CATALOG`
+- `USE SCHEMA`
+- `SELECT`
+- `MODIFY`
+- `CREATE TABLE`
+- `CREATE VOLUME`
+- `READ VOLUME`
+- `WRITE VOLUME`
+- `EXECUTE` on functions
+- `MANAGE` for managing grants/object settings
+- `CREATE CONNECTION`, `CREATE FOREIGN CATALOG` for federation-style scenarios
+
+### DENY vs GRANT
+
+```sql
+GRANT SELECT ON TABLE main.hr.salaries TO `analysts`;
+DENY SELECT ON TABLE main.hr.salaries TO `interns`;
+```
+
+If a user is in both groups, `DENY` wins.
+
+### Ownership
+
+Each UC securable has an owner. Owners can manage the object and its permissions. Production objects are often owned by groups or service principals rather than individual humans.
+
+### Storage credentials and external locations
+
+```sql
+-- Conceptual syntax; cloud-specific identity details differ by cloud.
+CREATE STORAGE CREDENTIAL my_cred
+WITH AZURE_MANAGED_IDENTITY '...';
+
+CREATE EXTERNAL LOCATION raw_landing
+URL 'abfss://landing@storageaccount.dfs.core.windows.net/'
+WITH (STORAGE CREDENTIAL my_cred);
+
+GRANT READ FILES ON EXTERNAL LOCATION raw_landing TO `data_engineers`;
+GRANT WRITE FILES ON EXTERNAL LOCATION raw_landing TO `data_engineers`;
+```
+
+Use external locations instead of legacy DBFS mounts.
+
+### Volumes
+
+```sql
+CREATE VOLUME main.raw.files;
+
+GRANT READ VOLUME ON VOLUME main.raw.files TO `analysts`;
+GRANT WRITE VOLUME ON VOLUME main.raw.files TO `data_engineers`;
+```
+
+Path:
+
+```text
+/Volumes/main/raw/files/my_file.csv
+```
+
+Use volumes for governed files that are not tables: CSV uploads, JSON files, PDFs, ML artifacts, libraries, checkpoints.
+
+### Row filters
+
+```sql
+CREATE FUNCTION main.sec.region_filter(region STRING)
+RETURN IF(is_account_group_member('eu_analysts'), region = 'EU', true);
+
+ALTER TABLE main.sales.orders
+SET ROW FILTER main.sec.region_filter ON (region);
+```
+
+Use row filters when different users should see different rows.
+
+### Column masks
+
+```sql
+CREATE FUNCTION main.sec.mask_email(email STRING)
+RETURN CASE
+  WHEN is_account_group_member('pii_readers') THEN email
+  ELSE '***MASKED***'
+END;
+
+ALTER TABLE main.sales.customers
+ALTER COLUMN email SET MASK main.sec.mask_email;
+```
+
+Use column masks when the table is visible but sensitive columns should be hidden or transformed.
+
+### ABAC
+
+Attribute-based access control uses tags and policies to centralize rules. Exam-level definition:
+- Tag data objects/columns with attributes such as `pii = true`.
+- Apply policies based on those attributes.
+- Prefer it when many tables/columns need consistent masking/filtering without hand-editing every object.
+
+### Audit logs
+
+Audit logs record security and workspace events such as:
+- Login and access events.
+- SQL queries / data access events.
+- Permission changes.
+- Object creation/deletion.
+- Job and cluster actions.
+
+Use audit logs for compliance and security investigations.
+
+### Lineage
+
+Unity Catalog lineage shows how data flows across:
+- Tables.
+- Views.
+- Columns.
+- Jobs.
+- Notebooks/queries/dashboards where supported.
+
+Use lineage to answer:
+- What upstream tables feed this dashboard?
+- What downstream reports break if I change this column?
+- Which job produced this table?
+
+### Delta Sharing
+
+Delta Sharing lets you share data without copying it.
+
+Provider side:
+
+```sql
+CREATE SHARE finance_share;
+ALTER SHARE finance_share ADD TABLE main.gold.revenue;
+CREATE RECIPIENT partner_org;
+GRANT SELECT ON SHARE finance_share TO RECIPIENT partner_org;
+```
+
+Consumer side depends on Databricks-to-Databricks or open sharing recipient type.
+
+Types:
+- Databricks-to-Databricks sharing: recipient also uses Databricks; smoother UC integration.
+- Open sharing / external recipients: recipient uses a sharing profile or compatible client.
+
+Advantages:
+- No duplicated files.
+- Centralized provider control.
+- Can share live Delta data.
+
+Limitations/cost considerations:
+- Cross-region/cross-cloud access can introduce egress/network costs.
+- External recipients may have read-only access and fewer integrated governance features.
+- Provider must manage what is added to the share and recipient permissions.
+
+### Lakehouse Federation
+
+Lakehouse Federation lets Databricks query external systems through governed connections and foreign catalogs.
+
+Use when:
+- Data should remain in an external database.
+- You need exploratory queries or joins without first ingesting all data.
+- You want UC governance over access to external sources.
+
+Do not use federation as a replacement for ingestion when:
+- You need high-performance repeated analytics at scale.
+- You need Delta features like time travel/OPTIMIZE on the data.
+- You want to transform and store curated bronze/silver/gold tables.
+
+Decision rule:
+- Query in place occasionally → federation.
+- Build reliable lakehouse pipeline → ingest into Delta using Lakeflow Connect/Auto Loader/COPY INTO.
+
+## 12.17 Exam-style scenario decision rules
+
+| Scenario | Best answer |
+|---|---|
+| Millions of files arrive continuously in cloud storage | Auto Loader with file notification and checkpointing |
+| A few CSV files arrive daily and must be loaded idempotently | COPY INTO |
+| Salesforce/ServiceNow/enterprise SaaS source with managed support | Lakeflow Connect managed connector |
+| Custom REST API with no connector | Notebook/script with REST client, secrets, scheduled by Lakeflow Job |
+| Need strict schema rule that rejects whole write | Delta CHECK constraint |
+| Need quality metrics and drop invalid rows without failing pipeline | Lakeflow expectation with DROP ROW |
+| Need expensive daily aggregation for dashboards | Materialized view or gold table |
+| Need always-live logical filter over table | View |
+| Need append-only incremental ingest table | Streaming table |
+| Need scheduled production ETL | Lakeflow Job on job cluster/serverless |
+| Need SQL BI dashboard compute | SQL warehouse |
+| Need local IDE development against Databricks Spark | Databricks Connect |
+| Need deploy same jobs to dev/test/prod | Declarative Automation Bundle targets + variables |
+| Need rerun only failed part of a multi-task job | Repair run / rerun failed task |
+| Need see why query is slow | Spark UI SQL/stages/task metrics |
+| One Spark task is much slower than others | Data skew |
+| Large shuffle read/write | Expensive join/groupBy/sort shuffle |
+| Spill to disk | Partitions too large or executor memory too low |
+| User can’t query table despite SELECT | Missing USE CATALOG or USE SCHEMA |
+| Share data externally without copying files | Delta Sharing |
+| Query external database in place | Lakehouse Federation |
+
+## 12.18 Mini mock questions — with answers
+
+1. A job runs daily and processes all new files since the last run. It should stop when finished but keep exactly-once file tracking. Which trigger style is best inside Auto Loader?  
+   **Answer:** `availableNow=True` with a unique checkpoint.
+
+2. A BI team needs a precomputed revenue aggregate that refreshes periodically. Which gold object is most appropriate?  
+   **Answer:** Materialized view, or a gold table if you need custom write logic.
+
+3. A user has `SELECT` on `main.sales.orders` but cannot query it. What is the likely missing permission?  
+   **Answer:** `USE CATALOG` on `main` or `USE SCHEMA` on `main.sales`.
+
+4. A Spark stage has 199 tasks finishing in 20 seconds and 1 task running for 15 minutes. What is the likely problem?  
+   **Answer:** Data skew.
+
+5. Which command validates a Databricks bundle without deploying it?  
+   **Answer:** `databricks bundle validate -t <target>`.
+
+6. In PySpark, does `df1.union(df2)` remove duplicates?  
+   **Answer:** No. PySpark union keeps duplicates; use `.distinct()` to remove them.
+
+7. A source schema often adds unexpected fields but you do not want ingestion to stop. Which Auto Loader schema evolution mode should you prefer?  
+   **Answer:** `rescue`.
+
+8. A notebook must be parameterized by environment. Which feature is commonly used?  
+   **Answer:** `dbutils.widgets` and job task base parameters.
+
+9. A full customer sync should delete target rows missing from the source. Which MERGE clause handles that?  
+   **Answer:** `WHEN NOT MATCHED BY SOURCE THEN DELETE`.
+
+10. A production workload should not be owned by an individual user. What identity should usually run/deploy it?  
+    **Answer:** A service principal or production group-owned setup.
+
+## 12.19 Last 48-hour cram sheet
+
+Memorize these code fragments:
+
+```sql
+GRANT USE CATALOG ON CATALOG main TO `group`;
+GRANT USE SCHEMA ON SCHEMA main.sales TO `group`;
+GRANT SELECT ON TABLE main.sales.orders TO `group`;
+```
+
+```sql
+COPY INTO main.bronze.orders
+FROM '/Volumes/main/landing/orders/'
+FILEFORMAT = JSON;
+```
+
+```python
+spark.readStream.format("cloudFiles") \
+  .option("cloudFiles.format", "json") \
+  .option("cloudFiles.schemaLocation", schema_path) \
+  .load(source_path)
+```
+
+```python
+df.writeStream.option("checkpointLocation", checkpoint_path) \
+  .trigger(availableNow=True) \
+  .toTable("main.bronze.events")
+```
+
+```sql
+MERGE INTO target t
+USING source s
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET *
+WHEN NOT MATCHED THEN INSERT *;
+```
+
+```bash
+databricks bundle validate -t dev
+databricks bundle deploy -t prod
+databricks bundle run job_name -t prod
+```
+
+```python
+dbutils.jobs.taskValues.set(key="row_count", value=123)
+dbutils.jobs.taskValues.get(taskKey="task_a", key="row_count", default=0)
+```
+
